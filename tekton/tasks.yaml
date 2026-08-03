@@ -50,3 +50,83 @@ spec:
           rm -rf "${WORKSPACE_SOURCE_PATH}"/..?*
         fi
 
+---
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: flake8
+spec:
+  workspaces:
+    - name: source
+  steps:
+    - name: lint
+      image: python:3.9-slim
+      workingDir: $(workspaces.source.path)
+      script: |
+        #!/bin/bash
+        set -eux
+        python -m pip install --upgrade pip wheel
+        pip install -r requirements.txt
+        flake8 service --count --max-complexity=10 --max-line-length=127 --statistics
+---
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: nose
+spec:
+  workspaces:
+    - name: source
+  params:
+    - name: database-uri
+      default: "postgresql://postgres:postgres@postgresql:5432/postgres"
+  steps:
+    - name: test
+      image: python:3.9-slim
+      workingDir: $(workspaces.source.path)
+      env:
+        - name: DATABASE_URI
+          value: $(params.database-uri)
+      script: |
+        #!/bin/bash
+        set -eux
+        python -m pip install --upgrade pip wheel
+        pip install -r requirements.txt
+        nosetests -v --with-spec --spec-color
+---
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: buildah
+spec:
+  params:
+    - name: IMAGE
+      type: string
+  workspaces:
+    - name: source
+  steps:
+    - name: build-and-push
+      image: image-registry.openshift-image-registry.svc:5000/openshift/cli:latest
+      workingDir: $(workspaces.source.path)
+      script: |
+        #!/bin/sh
+        set -eux
+        oc start-build accounts --from-dir=. --follow --wait
+---
+apiVersion: tekton.dev/v1beta1
+kind: Task
+metadata:
+  name: deploy
+spec:
+  params:
+    - name: deployment-name
+      default: accounts
+  workspaces:
+    - name: source
+  steps:
+    - name: deploy
+      image: image-registry.openshift-image-registry.svc:5000/openshift/cli:latest
+      script: |
+        #!/bin/sh
+        set -eux
+        oc rollout restart deployment/$(params.deployment-name)
+        oc rollout status deployment/$(params.deployment-name) --timeout=120s
